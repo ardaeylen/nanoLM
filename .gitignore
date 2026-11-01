@@ -6,6 +6,8 @@
 *.bin
 __pycache__/
 .vscode/
+.DS_Store
 ./*/__pycache__
 ./*/.DS_Store
 ./*/.vscode
+
