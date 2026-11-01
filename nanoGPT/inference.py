@@ -7,7 +7,7 @@ sys.path.insert(
 
 from RegexTokenizer import RegexTokenizer
 from utils import load_checkpoint
-from model import TransformerModel
+from model import CausalTransformer
 
 
 
@@ -30,7 +30,7 @@ if __name__ == "__main__":
 
     # model = BigramLanguageModel(vocab_size=vocab_size, max_context_length=context_length)
     # model = BagOfWordsLanguageModel(vocab_size=vocab_size, hidden_dim=dim_model, max_context_length = context_length)
-    model = TransformerModel(
+    model = CausalTransformer(
         vocab_size=tokenizer.vocab_size,
         hidden_dim=dim_model,
         max_context_length=context_length,
