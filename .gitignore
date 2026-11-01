@@ -4,3 +4,7 @@
 *.pyc
 *.pth
 *.bin
+nanoGPT/__pycache__
+./*/__pycache__
+./*/.DS_Store
+./*/.vscode
