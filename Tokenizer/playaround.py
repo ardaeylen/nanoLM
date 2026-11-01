@@ -48,7 +48,7 @@ num_merges = 5
 
 ids = train_tokenizer(ids, merges, num_merges, initial_vocab_size)
 
-# Enjoy facilitating of Byte-Pair Encoding and utf-8 Because in utf-8 after 256th character every character is represented by
+# Enjoy facilitating of Byte-Pair Encoding and utf-8 since in utf-8 after 256th character, every character is represented by
 # multiple bytes so that we can add (concatenate) pair of bytes to represent another unicode code point or a pair of tokens.
 # With that feature of utf-8 we can further decode text via previously created byte stream's corresponding indexes because 
 # every token that the model generally from merged indexes lets say 25894 and this item's corresponding merge tree will be
