@@ -1,11 +1,13 @@
 import json
-
+from typing import Optional, List
 class TokenizerBase:
-    def __init__(self, min_frequency: int = 2):
+    def __init__(self, min_frequency: int = 2, special_tokens : Optional[List[str]] = None):
         self.merges = {}
         self.min_frequency = min_frequency
         self.initial_vocab_size = 256
         self.special_tokens = {}
+        self.special_token_names = list(special_tokens or [])
+        self.ids_to_special_tokens = {}
         self._build_vocab()
 
     def get_pair_counts(self, ids, stats=None, freq=1):
@@ -32,7 +34,7 @@ class TokenizerBase:
         self.merges = {}
         ids = self.byte_encoder(text)
         vocab_idx = self.initial_vocab_size
-        num_merges = vocab_size - self.initial_vocab_size
+        num_merges = vocab_size - self.initial_vocab_size - len(self.special_token_names)
         merge_count = 0
         while merge_count < num_merges:
             current_stats = self.get_pair_counts(ids)
@@ -45,8 +47,12 @@ class TokenizerBase:
             self.merges[top_pair] = vocab_idx
             merge_count += 1
             vocab_idx += 1
+        self._finish_training()
+
+    def _finish_training(self):
         self._build_vocab()
-    
+        self._assign_special_tokens()
+
     @property
     def vocab_size(self):
         return len(self.vocab) + len(self.special_tokens)
@@ -63,8 +69,27 @@ class TokenizerBase:
             self.vocab[merged_idx] = self.vocab[first] + self.vocab[sec]
         return self.vocab
 
+    def _assign_special_tokens(self):
+        special_tok_start_idx = self.initial_vocab_size + len(self.merges)
+        self.special_tokens = {name: special_tok_start_idx + idx  for idx, name in enumerate(self.special_token_names)}
+        self._build_inverse_special_tokens()
+        return self.special_tokens
+
+    def _build_inverse_special_tokens(self):
+        self.ids_to_special_tokens = {idx: name for name, idx in self.special_tokens.items()}
+
+    
     def decode(self, token_sequence):
-        byte_stream = b''.join(self.vocab[token_idx] for token_idx in token_sequence)
+        byte_sequence_special_handled = []
+        for token_idx in token_sequence:
+            if token_idx in self.vocab:
+                byte_sequence_special_handled.append(self.vocab[token_idx])
+            elif token_idx in self.ids_to_special_tokens:
+                byte_sequence_special_handled.append(self.ids_to_special_tokens[token_idx].encode("utf-8"))
+            else:
+                raise ValueError(f"invalid token id: {token_idx}")
+
+        byte_stream = b''.join(byte_sequence_special_handled)        
         return byte_stream.decode('utf-8', errors='replace')
 
     def encode(self, text):
@@ -86,7 +111,7 @@ class TokenizerBase:
         return unicode_byte_ids
 
     def _config(self):
-        return {"min_frequency": self.min_frequency}
+        return {"min_frequency": self.min_frequency, "special_tokens":self.special_token_names}
 
     def save(self, path):
         model = {
@@ -103,8 +128,9 @@ class TokenizerBase:
     def _load_state(self, model):
         self.initial_vocab_size = model["initial_vocab_size"]
         self.merges = {(first, sec): merged_idx for first, sec, merged_idx in model["merges"]}
-        self.special_tokens = model["special_tokens"]
         self.vocab = self._build_vocab() 
+        self.special_tokens = model["special_tokens"]
+        self._build_inverse_special_tokens()
     
     @classmethod
     def load(cls, path):

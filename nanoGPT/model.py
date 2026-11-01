@@ -373,13 +373,14 @@ class MultiHeadAttentionkarpathy(nn.Module):
         )
 
 
-class TransformerModel(nn.Module):
+class CausalTransformer(nn.Module):
     def __init__(
-        self, vocab_size, hidden_dim, max_context_length, num_heads, num_blocks
+        self, vocab_size, hidden_dim, max_context_length, num_heads, num_blocks, eot_id
     ):
         super().__init__()
         self.num_heads = num_heads
         self.vocab_size = vocab_size
+        self.eot_id = eot_id
         self.hidden_dim = hidden_dim
         self.max_context_len = max_context_length
         self.head_dim = hidden_dim // num_heads
@@ -429,9 +430,9 @@ class TransformerModel(nn.Module):
             targets = target_batch_id_sequence.view(B * T)
             loss = F.cross_entropy(logits, targets)
         return logits.cpu(), loss.cpu()
-
+    
+    @torch.no_grad()
     def generate(self, input_ids, max_new_tokens):
-
         for _ in range(max_new_tokens):
             # logits is of shape (B, T, C)
             logits, _ = self(input_ids[:, -self.max_context_len :], None)
@@ -445,7 +446,8 @@ class TransformerModel(nn.Module):
             idx_next = torch.multinomial(probabilities, num_samples=1)
             # input_ids -> (B, T + 1)
             input_ids = torch.concat([input_ids, idx_next], dim=-1)
-
+            if idx_next.item() == self.eot_id:
+                break
         return input_ids
 
 

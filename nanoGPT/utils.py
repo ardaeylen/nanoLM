@@ -1,4 +1,7 @@
-def load_txt_dataset(file_path):
-    with open(file_path, "r", encoding="utf-8") as f:
-        data = f.read()
-    return data 
+import torch
+def save_checkpoint(model, path):
+    try:
+        torch.save(model.state_dict, path)
+    except Exception as e:
+        raise(f"Exception occured when saving checkpoint {e}")
+    

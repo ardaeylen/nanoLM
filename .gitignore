@@ -2,3 +2,5 @@
 *.json
 *.vscode
 *.pyc
+*.pth
+*.bin
