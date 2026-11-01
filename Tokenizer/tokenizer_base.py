@@ -31,8 +31,8 @@ class TokenizerBase:
     def train(self, text, vocab_size):
         self.merges = {}
         ids = self.byte_encoder(text)
-        vocab_idx = self.vocab_size
-        num_merges = vocab_size - self.vocab_size
+        vocab_idx = self.initial_vocab_size
+        num_merges = vocab_size - self.initial_vocab_size
         merge_count = 0
         while merge_count < num_merges:
             current_stats = self.get_pair_counts(ids)
@@ -71,11 +71,11 @@ class TokenizerBase:
         return self._encode_chunk(self.byte_encoder(text))
     
     def _encode_chunk(self, tokens):
-        # We want to find a pair that has the lowest index in vocabulary because we will contruct our tokens from leaf to root.
+        # We want to find a pair that has the lowest merge rank because we will contruct our tokens from leaf to root.
         while len(tokens) >= 2:
             stats = self.get_pair_counts(tokens)
             lowest_vocab_index_pair = min(stats, key = lambda pair: self.merges.get(pair, float("inf")))
-            if self.merges.get(lowest_vocab_index_pair, None):
+            if lowest_vocab_index_pair not in self.merges:
                    break
             tokens = self.merge(tokens, self.merges[lowest_vocab_index_pair], lowest_vocab_index_pair)
         return tokens

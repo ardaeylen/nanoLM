@@ -11,12 +11,12 @@ class RegexTokenizer(TokenizerBase):
         self.pattern = pattern
         self.compiled_pattern = re.compile(self.pattern)
 
-    def train(self, text, num_merges, init_vocab_size):
+    def train(self, text, vocab_size):
         chunk_freqs = Counter(self._split(text))        # " the" stored once, with its count
         chunks = [self.byte_encoder(chunk) for chunk in chunk_freqs]
         freqs = list(chunk_freqs.values())
         self.merges = {}
-        for vocab_idx in range(init_vocab_size, init_vocab_size + num_merges):
+        for vocab_idx in range(self.initial_vocab_size, vocab_size):
             stats = {}
             for ids, freq in zip(chunks, freqs):
                 self.get_pair_counts(ids, stats, freq) # pairs never cross chunk boundaries
