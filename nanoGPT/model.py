@@ -245,7 +245,7 @@ class MultiHeadAttention(nn.Module):
         )
         self.drop_out = nn.Dropout(0.2)
 
-    def forward(self, input_sequence):
+    def forward(self, input_sequence, kv_cache = None):
         B, T, C = input_sequence.shape
         # Just a linear transformation for input sequence of shape (B, T, C) to (B, T, C) for each attention weights q, k, v.
         queries = self.query_weights(input_sequence)
@@ -264,11 +264,23 @@ class MultiHeadAttention(nn.Module):
         values = values.transpose(1, 2)
         # Now that queries, keys and values are all (B, #heads, T, head_dim) dimension tensors.
 
+        # KV Cache
+        if kv_cache is not None:
+            # Concatenating (B, #heads, T_past, head_dim) of past keys, values with (B, #heads, T_new, head_dim) new keys values on sequence dim.
+            # In the inference time, batch of latest generated elements will be passed. Therefore no need to do anything for queries.
+            keys_past, values_past = kv_cache
+
+            keys = torch.cat([keys_past, keys], dim=2) 
+            values = torch.cat([values_past, values], dim=2) 
+        new_cache = (keys, values)
+
+        T_total = keys.shape[2]
         # (B, num_heads, T, head_dim) @ (B, num_heads, head_dim, T) -> (B, num_heads, T, T).
         attention_scores = queries @ keys.transpose(2, 3) / self.scale_factor
+        
         # Fill upper triangular values with -inf to avoid next tokens to participate in softmax.
         masked_attention_weights = attention_scores.masked_fill(
-            self.tril_tensor[:, :, :T, :T] == 0, float("-inf")
+            self.tril_tensor[:, :, T_total - T: T_total, : T_total] == 0, float("-inf")
         )
 
         masked_attention_weights = F.softmax(masked_attention_weights, dim=-1)
@@ -291,7 +303,7 @@ class MultiHeadAttention(nn.Module):
         # Just for regularization of training
         projected_features = self.drop_out(projected_features)
 
-        return projected_features
+        return projected_features, new_cache
 
 
 class FeedForward(nn.Module):
@@ -337,10 +349,11 @@ class MultiHeadAttentionBlock(nn.Module):
         # meaning that 0 mean and 1 variance.
         self.layer_norm1 = nn.LayerNorm(self.model_dim)
         self.layer_norm2 = nn.LayerNorm(self.model_dim)
-    def forward(self, x):
-        x = x + self.multi_head_attention(self.layer_norm1(x))
+    def forward(self, x, kv_cache = None):
+        out, new_cache = self.multi_head_attention(self.layer_norm1(x), kv_cache)
+        x = x + out
         x = x + self.feed_forward(self.layer_norm2(x))
-        return x
+        return x, new_cache
 
 
 class MultiHeadAttentionkarpathy(nn.Module):
@@ -391,8 +404,8 @@ class CausalTransformer(nn.Module):
         self.positional_encoding = nn.Embedding(self.max_context_len, self.hidden_dim)
         self.lm_head = nn.Linear(self.hidden_dim, self.vocab_size)
 
-        self.attn_blocks = nn.Sequential(
-            *[
+        self.attn_blocks = nn.ModuleList(
+            [
                 MultiHeadAttentionBlock(
                     model_dim=self.hidden_dim,
                     num_heads=self.num_heads,
@@ -405,40 +418,53 @@ class CausalTransformer(nn.Module):
         )
         self.layer_norm_last = nn.LayerNorm(self.hidden_dim)
 
-    def forward(self, batch_id_sequence, target_batch_id_sequence):
+    def forward(self, batch_id_sequence, target_batch_id_sequence = None, kv_caches = None, start_pos = 0):
         B, T = batch_id_sequence.shape
         # input and targets have both shape (B, T)
         tok_embs = self.token_embedding_table(batch_id_sequence)
+        assert start_pos + T <= self.max_context_len, f"position {start_pos + T} > {self.max_context_len}"
         # Positional embedding tensor is of shape (B, T)
         pos_embs = self.positional_encoding(
-            torch.arange(0, T, device=batch_id_sequence.device)
+            torch.arange(start_pos, min(start_pos + T, self.max_context_len), device=batch_id_sequence.device)
         )
         # (B, T, C) + (T, C) -> (B, T, C) (Broadcasted)
         x = tok_embs + pos_embs
 
-        x = self.attn_blocks(x)
+        new_caches = []
+        for block_idx, attn_block in enumerate(self.attn_blocks):
+            x, cache = attn_block(x, None if kv_caches is None else kv_caches[block_idx])
+            new_caches.append(cache)
+
         x = self.layer_norm_last(x)
         # Now that input sequence feature is of shape (B, T, C)
         logits = self.lm_head(x)
         # Now the logits have shape (B, T, vocab_size)
         if target_batch_id_sequence is None:
-            return logits, None
+            return logits, None, new_caches
         else:
             B, T, C = logits.shape
 
             logits = logits.view(B * T, C)
             targets = target_batch_id_sequence.view(B * T)
             loss = F.cross_entropy(logits, targets)
-        return logits.cpu(), loss.cpu()
+        return logits.cpu(), loss.cpu(), new_caches
     
     @torch.no_grad()
     def generate(self, input_ids, max_new_tokens):
+        kv_caches = None
+        token_pos = 0
         for _ in range(max_new_tokens):
             # logits is of shape (B, T, C)
-            logits, _ = self(input_ids[:, -self.max_context_len :], None)
+            if kv_caches is None:
+                logits, _, kv_caches = self(input_ids[:, -self.max_context_len :], None, kv_caches)
+            else:
+                logits, _, kv_caches = self(input_ids[:, -1 :], None, kv_caches, token_pos)
             # logits -> (B, C)
             B, T, C = logits.shape
-
+            token_pos += T
+            if token_pos >= self.max_context_len:
+                kv_caches = None
+                token_pos = 0
             logits = logits[:, -1, :]
             # probabilities -> (B, C)
             probabilities = F.softmax(logits, dim=-1)
@@ -463,3 +489,4 @@ if __name__ == "__main__":
     features = model(rand_int)
     print(features.shape)
     # print(masked_weights.shape)
+

@@ -63,7 +63,7 @@ def train(
         x = x.to(device)
         y = y.to(device)
 
-        _, loss = model(x, y)
+        _, loss, _ = model(x, y)
 
         optimizer.zero_grad()
         loss.backward()
@@ -91,7 +91,7 @@ def evaluate_both_sets(
             )
             x = x.to(device)
             y = y.to(device)
-            _, loss = model(x, y)
+            _, loss, _ = model(x, y)
             losses[iter] = loss.item()
         out[split] = losses.mean()
     model.train()
@@ -103,7 +103,7 @@ if __name__ == "__main__":
     project_folder_path = "/".join(script_path.split("/")[:-1])
     tokenizer_path = os.path.join(project_folder_path, "tokenizer_8k.json")
    
-    model_saving_path = "checkpoints/model.pth"
+    model_saving_path = os.path.join(script_path,"checkpoints/model.pth")
     tokenizer = RegexTokenizer.load(tokenizer_path)
     vocab_size = tokenizer.vocab_size
     tokenizer_eot_token = tokenizer.special_tokens["<|endoftext|>"]
