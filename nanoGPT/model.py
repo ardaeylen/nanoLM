@@ -87,9 +87,9 @@ class BagOfWordsLanguageModel(nn.Module):
             # [1, 0] @ [2, 3] -> [2, 3]
             # [1, 1]   [5, 6] -> [7, 9] it's basically a cumulative sum when we imagine that sequence is arranged
             # row ordered where colums are different channels. trill_mask @ (T, C) vector sums the input in row dim.
-            mean_mask = torch.tril(
-                torch.ones(T, T)
-            ).device(batch_id_sequence.device)  # Now that mean mask has shape (T, T) but with this values it only sums.
+            mean_mask = torch.tril(torch.ones(T, T)).device(
+                batch_id_sequence.device
+            )  # Now that mean mask has shape (T, T) but with this values it only sums.
             mean_mask = mean_mask / torch.sum(
                 mean_mask, dim=1, keepdim=True
             )  # Now that our mean multiplicator matrix is ready.
@@ -245,7 +245,7 @@ class MultiHeadAttention(nn.Module):
         )
         self.drop_out = nn.Dropout(0.2)
 
-    def forward(self, input_sequence, kv_cache = None):
+    def forward(self, input_sequence, kv_cache=None):
         B, T, C = input_sequence.shape
         # Just a linear transformation for input sequence of shape (B, T, C) to (B, T, C) for each attention weights q, k, v.
         queries = self.query_weights(input_sequence)
@@ -267,20 +267,20 @@ class MultiHeadAttention(nn.Module):
         # KV Cache
         if kv_cache is not None:
             # Concatenating (B, #heads, T_past, head_dim) of past keys, values with (B, #heads, T_new, head_dim) new keys values on sequence dim.
-            # In the inference time, batch of latest generated elements will be passed. Therefore no need to do anything for queries.
+            # In the inference time, batch of latest generated elements will be passed. Therefore no need to do anything for queries.
             keys_past, values_past = kv_cache
 
-            keys = torch.cat([keys_past, keys], dim=2) 
-            values = torch.cat([values_past, values], dim=2) 
+            keys = torch.cat([keys_past, keys], dim=2)
+            values = torch.cat([values_past, values], dim=2)
         new_cache = (keys, values)
 
         T_total = keys.shape[2]
         # (B, num_heads, T, head_dim) @ (B, num_heads, head_dim, T) -> (B, num_heads, T, T).
         attention_scores = queries @ keys.transpose(2, 3) / self.scale_factor
-        
+
         # Fill upper triangular values with -inf to avoid next tokens to participate in softmax.
         masked_attention_weights = attention_scores.masked_fill(
-            self.tril_tensor[:, :, T_total - T: T_total, : T_total] == 0, float("-inf")
+            self.tril_tensor[:, :, T_total - T : T_total, :T_total] == 0, float("-inf")
         )
 
         masked_attention_weights = F.softmax(masked_attention_weights, dim=-1)
@@ -328,7 +328,7 @@ class MultiHeadAttentionRoPE(nn.Module):
                 )
             ),
         )
-        
+
         self.query_weights = nn.Linear(
             in_features=self.model_embed_dim,
             out_features=self.model_embed_dim,
@@ -350,7 +350,7 @@ class MultiHeadAttentionRoPE(nn.Module):
         )
         self.drop_out = nn.Dropout(0.2)
 
-    def forward(self, input_sequence, cos_angles, sin_angles, kv_cache = None):
+    def forward(self, input_sequence, cos_angles, sin_angles, kv_cache=None):
         B, T, C = input_sequence.shape
         # Just a linear transformation for input sequence of shape (B, T, C) to (B, T, C) for each attention weights q, k, v.
         queries = self.query_weights(input_sequence)
@@ -369,26 +369,26 @@ class MultiHeadAttentionRoPE(nn.Module):
         values = values.transpose(1, 2)
         # Now that queries, keys and values are all (B, #heads, T, head_dim) dimension tensors.
 
-        # RoPE        
+        # RoPE
         queries = self.apply_rope(queries, cos_angles, sin_angles)
         keys = self.apply_rope(keys, cos_angles, sin_angles)
 
         # KV Cache
         if kv_cache is not None:
             # Concatenating (B, #heads, T_past, head_dim) of past keys, values with (B, #heads, T_new, head_dim) new keys values on sequence dim.
-            # In the inference time, batch of latest generated elements will be passed. Therefore no need to do anything for queries.
+            # In the inference time, batch of latest generated elements will be passed. Therefore no need to do anything for queries.
             keys_past, values_past = kv_cache
-            keys = torch.cat([keys_past, keys], dim=2) 
-            values = torch.cat([values_past, values], dim=2) 
+            keys = torch.cat([keys_past, keys], dim=2)
+            values = torch.cat([values_past, values], dim=2)
         new_cache = (keys, values)
 
         T_total = keys.shape[2]
         # (B, num_heads, T, head_dim) @ (B, num_heads, head_dim, T) -> (B, num_heads, T, T).
         attention_scores = queries @ keys.transpose(2, 3) / self.scale_factor
-        
+
         # Fill upper triangular values with -inf to avoid next tokens to participate in softmax.
         masked_attention_weights = attention_scores.masked_fill(
-            self.tril_tensor[:, :, T_total - T: T_total, : T_total] == 0, float("-inf")
+            self.tril_tensor[:, :, T_total - T : T_total, :T_total] == 0, float("-inf")
         )
 
         masked_attention_weights = F.softmax(masked_attention_weights, dim=-1)
@@ -412,7 +412,7 @@ class MultiHeadAttentionRoPE(nn.Module):
         projected_features = self.drop_out(projected_features)
 
         return projected_features, new_cache
-    
+
     @staticmethod
     def apply_rope(x, cos, sin):
         B, num_heads, T, head_dim = x.shape
@@ -420,6 +420,7 @@ class MultiHeadAttentionRoPE(nn.Module):
         x = x * cos + torch.flip(x * sin, dims=[-1])
         x = x.view(B, num_heads, T, head_dim)
         return x
+
 
 class FeedForward(nn.Module):
     def __init__(self, embed_dim, proj_dim):
@@ -440,6 +441,300 @@ class FeedForward(nn.Module):
         return x
 
 
+class MultiHeadSWAAttentionRoPE(nn.Module):
+    def __init__(
+        self,
+        model_dim,
+        num_heads,
+        query_key_dim,
+        value_dim,
+        context_length,
+        window_size,
+    ):
+        super().__init__()
+        self.model_embed_dim = model_dim
+        self.num_heads = num_heads
+        self.query_key_dim = query_key_dim
+        self.value_dim = value_dim
+        self.max_context_len = context_length
+        self.window_size = window_size
+        self.head_size = self.model_embed_dim // self.num_heads
+
+        assert (self.head_size * self.num_heads) == self.model_embed_dim
+        self.scale_factor = self.head_size**0.5
+
+        self.register_buffer(
+            "band_mask",
+            torch.tril(torch.ones((self.max_context_len, self.max_context_len))).view(
+                1, 1, self.max_context_len, self.max_context_len
+            )
+            * torch.triu(
+                torch.ones((self.max_context_len, self.max_context_len)),
+                diagonal=-(self.window_size - 1),
+            ).view(1, 1, self.max_context_len, self.max_context_len),
+        )
+
+        self.query_weights = nn.Linear(
+            in_features=self.model_embed_dim,
+            out_features=self.model_embed_dim,
+            bias=False,
+        )
+        self.key_weights = nn.Linear(
+            in_features=self.model_embed_dim,
+            out_features=self.model_embed_dim,
+            bias=False,
+        )
+        self.value_weights = nn.Linear(
+            in_features=self.model_embed_dim,
+            out_features=self.model_embed_dim,
+            bias=False,
+        )
+
+        self.out_proj = nn.Linear(
+            in_features=self.model_embed_dim, out_features=self.model_embed_dim
+        )
+        self.drop_out = nn.Dropout(0.2)
+
+    def forward(self, input_sequence, cos_angles, sin_angles, rolling_buffer_cache=None, buffer_pos = 0, start_pos = 0):
+        B, T, C = input_sequence.shape
+        # Just a linear transformation for input sequence of shape (B, T, C) to (B, T, C) for each attention weights q, k, v.
+        queries = self.query_weights(input_sequence)
+        keys = self.key_weights(input_sequence)
+        values = self.value_weights(input_sequence)
+
+        # Divide the q, k, v matrices into number of heads to form a shape of (B, num_heads, T, head_dim)
+
+        queries = queries.view(B, T, self.num_heads, self.head_size)
+        keys = keys.view(B, T, self.num_heads, self.head_size)
+        values = values.view(B, T, self.num_heads, self.head_size)
+        # Now that queries, keys and values are all (B, T, #heads, head_dim) dimension tensors.
+
+        queries = queries.transpose(1, 2)
+        keys = keys.transpose(1, 2)
+        values = values.transpose(1, 2)
+        # Now that queries, keys and values are all (B, #heads, T, head_dim) dimension tensors.
+
+        # RoPE
+        queries = MultiHeadAttentionRoPE.apply_rope(queries, cos_angles, sin_angles)
+        keys = MultiHeadAttentionRoPE.apply_rope(keys, cos_angles, sin_angles)
+        # KV Cache
+        if rolling_buffer_cache is not None:
+            # Concatenating (B, #heads, T_past, head_dim) of past keys, values with (B, #heads, T_new, head_dim) new keys values on sequence dim.
+            # In the inference time, batch of latest generated elements will be passed. Therefore no need to do anything for queries.
+            keys_buff, values_buff = rolling_buffer_cache
+            keys = MultiHeadSWAAttentionRoPE.write_on_buffer(keys, keys_buff, buffer_pos, self.window_size)
+            values = MultiHeadSWAAttentionRoPE.write_on_buffer(values, values_buff, buffer_pos, self.window_size)
+
+        new_cache = (keys, values)
+
+        if start_pos:
+            keys = keys[:, :, :min(start_pos + T, self.window_size), :]
+            values = values[:, :, :min(start_pos + T, self.window_size), :]
+        T_total = keys.shape[2]
+        
+        # (B, num_heads, T, head_dim) @ (B, num_heads, head_dim, T) -> (B, num_heads, T, T).
+        attention_scores = queries @ keys.transpose(2, 3) / self.scale_factor
+
+        if rolling_buffer_cache is None:
+            # Fill outside of every position's own window with -inf to avoid outside window tokens to participate in softmax.
+            attention_scores = attention_scores.masked_fill(
+                self.band_mask[:, :, T_total - T : T_total, :T_total] == 0, float("-inf")
+            )
+
+        masked_attention_weights = F.softmax(attention_scores, dim=-1)
+        # Dot product of attention weights with value vectors. So the output feature tensor is of shape (B, num_heads, T, head_dim)
+
+        # Just for regularization of the model in training we drop out some affinities between tokens.
+        masked_attention_weights = self.drop_out(masked_attention_weights)
+
+        seq_features = masked_attention_weights @ values
+        # Rearrange output features to feed into projection layer. (B, num_heads, T, head_dim) -> (B, T, num_heads, head_dim) to form (B, T, C = num_heads * head_dim)
+        # seq_features -> (B, num_heads, T, head_dim) -> (B, T, num_heads, head_dim)
+        seq_features = seq_features.transpose(1, 2).contiguous()
+        # View only change how data read from memory in case of strides. In contrast, transposing a tensor changes ordering of data
+        # so the data needs to be sit on a contiguous memory to redefine its strides and ordering.
+
+        seq_features = seq_features.view(B, T, C)
+
+        projected_features = self.out_proj(seq_features)
+
+        # Just for regularization of training
+        projected_features = self.drop_out(projected_features)
+
+        return projected_features, new_cache
+    
+    @staticmethod
+    def write_on_buffer(x, buffer, token_pos, window_size):
+        B, num_heads, T, head_dim = x.shape
+        B, num_heads, W, head_dim = buffer.shape
+        buffer_positions = (token_pos + torch.arange(T, device=x.device)) % window_size
+        buffer[:, :, buffer_positions, :] = x
+        return buffer
+
+class MultiHeadSWAAttentionBlockRoPE(nn.Module):
+    def __init__(self, model_dim, num_heads, query_key_dim, value_dim, context_length, window_size):
+        super().__init__()
+        self.model_dim = model_dim
+        self.num_heads = num_heads
+        self.qk_dim = query_key_dim
+        self.value_dim = value_dim
+        self.context_len = context_length
+        self.window_size = window_size
+        self.multi_head_swa_attention = MultiHeadSWAAttentionRoPE(
+            model_dim=self.model_dim,
+            num_heads=self.num_heads,
+            query_key_dim=self.qk_dim,
+            value_dim=self.value_dim,
+            context_length=self.context_len,
+            window_size=self.window_size
+        )
+        self.feed_forward = FeedForward(
+            embed_dim=self.model_dim, proj_dim=self.model_dim * 4
+        )
+        # LayerNorm is a normalization across the units of an embedding vectors
+        # so that each feature of a token's hidden feature has a gaussian distribution
+        # meaning that 0 mean and 1 variance.
+        self.layer_norm1 = nn.LayerNorm(self.model_dim)
+        self.layer_norm2 = nn.LayerNorm(self.model_dim)
+
+    def forward(self, x, cos_angles, sin_angles, rolling_buffer=None, buffer_pos = 0, start_pos = 0):
+        out, rolling_buffer = self.multi_head_swa_attention(
+            self.layer_norm1(x), cos_angles, sin_angles, rolling_buffer, buffer_pos, start_pos
+        )
+        x = x + out
+        x = x + self.feed_forward(self.layer_norm2(x))
+        return x, rolling_buffer
+
+class SWATransformer(nn.Module):
+    def __init__(
+        self, vocab_size, hidden_dim, max_context_length, num_heads, num_blocks, eot_id, window_size
+    ):
+        super().__init__()
+        self.num_heads = num_heads
+        self.vocab_size = vocab_size
+        self.eot_id = eot_id
+        self.hidden_dim = hidden_dim
+        self.max_context_len = max_context_length
+        self.head_dim = hidden_dim // num_heads
+        self.num_blocks = num_blocks
+        self.window_size = window_size
+        assert self.head_dim * num_heads == self.hidden_dim
+
+        self.token_embedding_table = nn.Embedding(self.vocab_size, self.hidden_dim)
+        # self.positional_encoding = nn.Embedding(self.max_context_len, self.hidden_dim)
+        self.lm_head = nn.Linear(self.hidden_dim, self.vocab_size)
+
+        # Rotary Position Embeddings
+        inverse_frequencies = 10000 ** (-torch.arange(0, self.head_dim, 2, dtype=torch.float32) / self.head_dim)
+        positions = torch.arange(0, self.max_context_len, dtype=torch.float32)
+        freqs = torch.outer(positions, inverse_frequencies)
+        sin_angles = torch.sin(freqs).view(1, 1, self.max_context_len, self.head_dim // 2, 1)
+        cos_angles = torch.cos(freqs).view(1, 1, self.max_context_len, self.head_dim // 2, 1)
+        self.register_buffer("sin_angles", torch.cat([sin_angles, -sin_angles], dim = 4))
+        self.register_buffer("cos_angles", torch.cat([cos_angles, cos_angles], dim = 4))
+
+        self.attn_blocks = nn.ModuleList(
+            [
+                MultiHeadSWAAttentionBlockRoPE(
+                    model_dim=self.hidden_dim,
+                    num_heads=self.num_heads,
+                    query_key_dim=self.head_dim,
+                    value_dim=self.head_dim,
+                    context_length=self.max_context_len,
+                    window_size=self.window_size
+                )
+                for _ in range(num_blocks)
+            ]
+        )
+        self.layer_norm_last = nn.LayerNorm(self.hidden_dim)
+
+    def forward(self, batch_id_sequence, target_batch_id_sequence = None, rolling_buffer = None, start_pos = 0, buffer_pos = 0):
+        B, T = batch_id_sequence.shape
+        
+        assert start_pos + T <= self.max_context_len, f"{start_pos + T} must never exceed context length {self.max_context_len}"
+        # input and targets have both shape (B, T)
+        tok_embs = self.token_embedding_table(batch_id_sequence)
+        # Positional embedding tensor is of shape (B, T)
+        # pos_embs = self.positional_encoding(
+        #     torch.arange(start_pos, start_pos + T, device=batch_id_sequence.device)
+        # )
+        # (B, T, C) + (T, C) -> (B, T, C) (Broadcasted)
+        x = tok_embs  # + pos_embs
+        cos_angles = self.cos_angles[:, :, start_pos : start_pos + T, :, :]
+        sin_angles = self.sin_angles[:, :, start_pos : start_pos + T, :, :]
+
+        new_caches = []
+        for block_idx, attn_block in enumerate(self.attn_blocks):
+            x, cache = attn_block(x, cos_angles, sin_angles, None if rolling_buffer is None else rolling_buffer[block_idx], buffer_pos, start_pos)
+            new_caches.append(cache)
+
+        x = self.layer_norm_last(x)
+        # Now that input sequence feature is of shape (B, T, C)
+        logits = self.lm_head(x)
+        # Now the logits have shape (B, T, vocab_size)
+        if target_batch_id_sequence is None:
+            return logits, None, new_caches
+        else:
+            B, T, C = logits.shape
+
+            logits = logits.view(B * T, C)
+            targets = target_batch_id_sequence.view(B * T)
+            loss = F.cross_entropy(logits, targets)
+        return logits.cpu(), loss.cpu(), new_caches
+
+    @torch.no_grad()
+    def generate(self, input_ids, max_new_tokens):
+        buffer = None
+        token_pos = 0
+        drop_length = 32
+        buffer_pos = 0
+        for _ in range(max_new_tokens):
+            # logits is of shape (B, T, C)
+            if buffer is None:
+                logits, _, buffer = self(
+                    input_ids[:, -self.max_context_len :], None, buffer
+                )
+                for layer_idx in range(len(buffer)):
+                    k_cache, v_cache = buffer[layer_idx]
+                    B, num_heads, T, head_dim = k_cache.shape
+                    k_cache = k_cache[:, :, -self.window_size:, :]
+                    v_cache = v_cache[:, :, -self.window_size:, :]
+                    k_cache = MultiHeadSWAAttentionRoPE.write_on_buffer(k_cache, torch.empty((B, num_heads, self.window_size, head_dim), dtype=k_cache.dtype ,device=k_cache.device), max(T, self.window_size) % self.window_size, self.window_size)
+                    v_cache = MultiHeadSWAAttentionRoPE.write_on_buffer(v_cache, torch.empty((B, num_heads, self.window_size, head_dim), dtype=v_cache.dtype, device=v_cache.device), max(T, self.window_size) % self.window_size, self.window_size)
+                    buffer[layer_idx] = (k_cache, v_cache)
+            else:
+                logits, _, buffer = self(
+                    input_ids[:, -1:], None, buffer, token_pos, buffer_pos
+                )
+            # logits -> (B, C)
+            B, T, C = logits.shape
+            token_pos += T
+            buffer_pos = (buffer_pos + T) % self.window_size
+            if token_pos >= self.max_context_len:
+                buffer = self.rotate_cache(buffer, drop_length)
+                token_pos = token_pos - drop_length
+            logits = logits[:, -1, :]
+            # probabilities -> (B, C)
+            probabilities = F.softmax(logits, dim=-1)
+            # idx_next -> (B,1)
+            idx_next = torch.multinomial(probabilities, num_samples=1)
+            # input_ids -> (B, T + 1)
+            input_ids = torch.concat([input_ids, idx_next], dim=-1)
+            if idx_next.item() == self.eot_id:
+                break
+        return input_ids
+
+    def rotate_cache(self, kv_cache, n_dropped):
+        if kv_cache is not None:
+            rotate_pos_sin = self.sin_angles[:, :, n_dropped : n_dropped + 1, :, :]
+            rotate_pos_cos = self.cos_angles[:, :, n_dropped : n_dropped + 1, :, :]
+            for layer_idx, (keys_l, vals_l) in enumerate(kv_cache):
+                keys_l = MultiHeadAttentionRoPE.apply_rope(
+                    keys_l, rotate_pos_cos, -rotate_pos_sin
+                )
+                kv_cache[layer_idx] = (keys_l, vals_l)
+        return kv_cache
+    
 class MultiHeadAttentionBlock(nn.Module):
     def __init__(self, model_dim, num_heads, query_key_dim, value_dim, context_length):
         super().__init__()
@@ -464,11 +759,13 @@ class MultiHeadAttentionBlock(nn.Module):
         # meaning that 0 mean and 1 variance.
         self.layer_norm1 = nn.LayerNorm(self.model_dim)
         self.layer_norm2 = nn.LayerNorm(self.model_dim)
-    def forward(self, x, kv_cache = None):
+
+    def forward(self, x, kv_cache=None):
         out, new_cache = self.multi_head_attention(self.layer_norm1(x), kv_cache)
         x = x + out
         x = x + self.feed_forward(self.layer_norm2(x))
         return x, new_cache
+
 
 class MultiHeadAttentionBlockRoPE(nn.Module):
     def __init__(self, model_dim, num_heads, query_key_dim, value_dim, context_length):
@@ -494,11 +791,15 @@ class MultiHeadAttentionBlockRoPE(nn.Module):
         # meaning that 0 mean and 1 variance.
         self.layer_norm1 = nn.LayerNorm(self.model_dim)
         self.layer_norm2 = nn.LayerNorm(self.model_dim)
-    def forward(self, x, cos_angles, sin_angles, kv_cache = None):
-        out, new_cache = self.multi_head_attention(self.layer_norm1(x), cos_angles, sin_angles, kv_cache)
+
+    def forward(self, x, cos_angles, sin_angles, kv_cache=None):
+        out, new_cache = self.multi_head_attention(
+            self.layer_norm1(x), cos_angles, sin_angles, kv_cache
+        )
         x = x + out
         x = x + self.feed_forward(self.layer_norm2(x))
         return x, new_cache
+
 
 class MultiHeadAttentionkarpathy(nn.Module):
     def __init__(self, model_dim, num_heads, query_key_dim, value_dim, context_length):
@@ -582,9 +883,9 @@ class CausalTransformer(nn.Module):
         #     torch.arange(start_pos, start_pos + T, device=batch_id_sequence.device)
         # )
         # (B, T, C) + (T, C) -> (B, T, C) (Broadcasted)
-        x = tok_embs #+ pos_embs
-        cos_angles = self.cos_angles[:, :, start_pos: start_pos + T, :, :]
-        sin_angles = self.sin_angles[:, :, start_pos: start_pos + T, :, :]
+        x = tok_embs  # + pos_embs
+        cos_angles = self.cos_angles[:, :, start_pos : start_pos + T, :, :]
+        sin_angles = self.sin_angles[:, :, start_pos : start_pos + T, :, :]
 
         new_caches = []
         for block_idx, attn_block in enumerate(self.attn_blocks):
@@ -604,7 +905,7 @@ class CausalTransformer(nn.Module):
             targets = target_batch_id_sequence.view(B * T)
             loss = F.cross_entropy(logits, targets)
         return logits.cpu(), loss.cpu(), new_caches
-    
+
     @torch.no_grad()
     def generate(self, input_ids, max_new_tokens):
         kv_caches = None
@@ -613,9 +914,13 @@ class CausalTransformer(nn.Module):
         for _ in range(max_new_tokens):
             # logits is of shape (B, T, C)
             if kv_caches is None:
-                logits, _, kv_caches = self(input_ids[:, -self.max_context_len :], None, kv_caches)
+                logits, _, kv_caches = self(
+                    input_ids[:, -self.max_context_len :], None, kv_caches
+                )
             else:
-                logits, _, kv_caches = self(input_ids[:, -1 :], None, kv_caches, token_pos)
+                logits, _, kv_caches = self(
+                    input_ids[:, -1:], None, kv_caches, token_pos
+                )
             # logits -> (B, C)
             B, T, C = logits.shape
             token_pos += T
@@ -635,14 +940,17 @@ class CausalTransformer(nn.Module):
 
     def rotate_cache(self, kv_cache, n_dropped):
         if kv_cache is not None:
-            rotate_pos_sin = self.sin_angles[:, :, n_dropped: n_dropped + 1, :, :]
-            rotate_pos_cos = self.cos_angles[:, :, n_dropped: n_dropped + 1, :, :]
+            rotate_pos_sin = self.sin_angles[:, :, n_dropped : n_dropped + 1, :, :]
+            rotate_pos_cos = self.cos_angles[:, :, n_dropped : n_dropped + 1, :, :]
             for layer_idx, (keys_l, vals_l) in enumerate(kv_cache):
                 keys_l = keys_l[:, :, n_dropped:, :]
                 vals_l = vals_l[:, :, n_dropped:, :]
-                keys_l = MultiHeadAttentionRoPE.apply_rope(keys_l, rotate_pos_cos, -rotate_pos_sin)
+                keys_l = MultiHeadAttentionRoPE.apply_rope(
+                    keys_l, rotate_pos_cos, -rotate_pos_sin
+                )
                 kv_cache[layer_idx] = (keys_l, vals_l)
         return kv_cache
+
 
 if __name__ == "__main__":
     # block = AttentionBlock(128, 16, 32, 36)
