@@ -495,7 +495,7 @@ class MultiHeadSWAAttentionRoPE(nn.Module):
         )
         self.drop_out = nn.Dropout(0.2)
 
-    def forward(self, input_sequence, cos_angles, sin_angles, rolling_buffer_cache=None, buffer_pos = 0, start_pos = 0):
+    def forward(self, input_sequence, cos_angles, sin_angles, rolling_buffer_cache=None, buffer_pos = 0, n_written = 0):
         B, T, C = input_sequence.shape
         # Just a linear transformation for input sequence of shape (B, T, C) to (B, T, C) for each attention weights q, k, v.
         queries = self.query_weights(input_sequence)
@@ -527,9 +527,9 @@ class MultiHeadSWAAttentionRoPE(nn.Module):
 
         new_cache = (keys, values)
 
-        if start_pos:
-            keys = keys[:, :, :min(start_pos + T, self.window_size), :]
-            values = values[:, :, :min(start_pos + T, self.window_size), :]
+        if n_written:
+            keys = keys[:, :, :min(n_written + T, self.window_size), :]
+            values = values[:, :, :min(n_written + T, self.window_size), :]
         T_total = keys.shape[2]
         
         # (B, num_heads, T, head_dim) @ (B, num_heads, head_dim, T) -> (B, num_heads, T, T).
@@ -566,7 +566,6 @@ class MultiHeadSWAAttentionRoPE(nn.Module):
     @staticmethod
     def write_on_buffer(x, buffer, token_pos, window_size):
         B, num_heads, T, head_dim = x.shape
-        B, num_heads, W, head_dim = buffer.shape
         buffer_positions = (token_pos + torch.arange(T, device=x.device)) % window_size
         buffer[:, :, buffer_positions, :] = x
         return buffer
@@ -597,9 +596,9 @@ class MultiHeadSWAAttentionBlockRoPE(nn.Module):
         self.layer_norm1 = nn.LayerNorm(self.model_dim)
         self.layer_norm2 = nn.LayerNorm(self.model_dim)
 
-    def forward(self, x, cos_angles, sin_angles, rolling_buffer=None, buffer_pos = 0, start_pos = 0):
+    def forward(self, x, cos_angles, sin_angles, rolling_buffer=None, buffer_pos = 0, n_written = 0):
         out, rolling_buffer = self.multi_head_swa_attention(
-            self.layer_norm1(x), cos_angles, sin_angles, rolling_buffer, buffer_pos, start_pos
+            self.layer_norm1(x), cos_angles, sin_angles, rolling_buffer, buffer_pos, n_written
         )
         x = x + out
         x = x + self.feed_forward(self.layer_norm2(x))
@@ -648,7 +647,7 @@ class SWATransformer(nn.Module):
         )
         self.layer_norm_last = nn.LayerNorm(self.hidden_dim)
 
-    def forward(self, batch_id_sequence, target_batch_id_sequence = None, rolling_buffer = None, start_pos = 0, buffer_pos = 0):
+    def forward(self, batch_id_sequence, target_batch_id_sequence = None, rolling_buffer = None, start_pos = 0, buffer_pos = 0, n_written = 0):
         B, T = batch_id_sequence.shape
         
         assert start_pos + T <= self.max_context_len, f"{start_pos + T} must never exceed context length {self.max_context_len}"
@@ -665,7 +664,7 @@ class SWATransformer(nn.Module):
 
         new_caches = []
         for block_idx, attn_block in enumerate(self.attn_blocks):
-            x, cache = attn_block(x, cos_angles, sin_angles, None if rolling_buffer is None else rolling_buffer[block_idx], buffer_pos, start_pos)
+            x, cache = attn_block(x, cos_angles, sin_angles, None if rolling_buffer is None else rolling_buffer[block_idx], buffer_pos, n_written)
             new_caches.append(cache)
 
         x = self.layer_norm_last(x)
@@ -688,6 +687,7 @@ class SWATransformer(nn.Module):
         token_pos = 0
         drop_length = 32
         buffer_pos = 0
+        n_written_buffer = 0
         for _ in range(max_new_tokens):
             # logits is of shape (B, T, C)
             if buffer is None:
@@ -704,11 +704,12 @@ class SWATransformer(nn.Module):
                     buffer[layer_idx] = (k_cache, v_cache)
             else:
                 logits, _, buffer = self(
-                    input_ids[:, -1:], None, buffer, token_pos, buffer_pos
+                    input_ids[:, -1:], None, buffer, token_pos, buffer_pos, n_written_buffer
                 )
             # logits -> (B, C)
             B, T, C = logits.shape
             token_pos += T
+            n_written_buffer += T 
             buffer_pos = (buffer_pos + T) % self.window_size
             if token_pos >= self.max_context_len:
                 buffer = self.rotate_cache(buffer, drop_length)
